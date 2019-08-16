@@ -113,6 +113,7 @@ struct Emulator {
 impl Emulator {
     fn open<P: AsRef<Path>>(path: P) -> Self {
         let mut emulator = Emulator::default();
+        emulator.memory.load_default_sprites();
         emulator.memory.load_rom(path);
         emulator.cpu.pc = 0x200;
 
@@ -120,7 +121,7 @@ impl Emulator {
     }
 
     fn run(&mut self) {
-        while true {
+        loop {
             self.step();
         }
     }
@@ -134,14 +135,18 @@ impl Emulator {
         }
 
         let a = (self.memory.mem[self.cpu.pc as usize] & 0xf0) >> 4;
-        let b = (self.memory.mem[self.cpu.pc as usize] & 0x0f);
+        let b = self.memory.mem[self.cpu.pc as usize] & 0x0f;
         let c = (self.memory.mem[self.cpu.pc as usize + 1] & 0xf0) >> 4;
-        let d = (self.memory.mem[self.cpu.pc as usize + 1] & 0x0f);
+        let d = self.memory.mem[self.cpu.pc as usize + 1] & 0x0f;
 
         print!("{:#04x?}: {:02x?} {:02x?} {:02x?} {:02x?};  ", self.cpu.pc, a, b, c, d);
         match (a, b, c, d) {
             (0, 0, 0xe, 0) => println!("CLS"),
-            (0, 0, 0xe, 0xe) => println!("RET"),
+            (0, 0, 0xe, 0xe) => {
+                println!("RET");
+                self.cpu.pc = self.cpu.stack[self.cpu.sp as usize];
+                self.cpu.sp -= 1;
+            },
             (1, b, c, d) => println!("JP    {:#04x?}", xxx_to_u16(b, c, d)),
             (2, b, c, d) => println!("CALL  {:#04x?}", xxx_to_u16(b, c, d)),
             (3, b, c, d) => println!("SE    V{:x?} {:x?}", b, xx_to_u16(c, d)),
