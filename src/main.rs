@@ -9,6 +9,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::env;
 use rand::prelude::*;
+use mini_gl_fb::{MiniGlFb, BufferFormat};
 
 
 
@@ -83,6 +84,7 @@ impl Memory {
 #[derive(Default)]
 struct Cpu {
     pc: u16,
+    ic: u32,
     sp: u8,
     stack: [u16; 16],
 
@@ -95,8 +97,34 @@ struct Cpu {
 }
 
 struct Display {
-    display_mode: DisplayMode,
-    graphics: Vec<u8>,
+    //display_mode: DisplayMode,
+    buffer: Vec<u8>,
+    fb: MiniGlFb,
+}
+impl Display {
+    fn new() -> Self {
+        let config: mini_gl_fb::Config<&str> = mini_gl_fb::Config {
+            buffer_size: (64, 32),
+            .. Default::default()
+        };
+        let mut fb = mini_gl_fb::get_fancy(config);
+        fb.change_buffer_format::<u8>(BufferFormat::R);
+        let buffer = vec![0u8; 64 * 32];
+
+        Display {
+            buffer,
+            fb,
+        }
+
+    }
+
+    fn update(&mut self) {
+        let mut rgba = vec![[0u8]; 64 * 32];
+        for (src, dst) in self.buffer.iter().zip(rgba.iter_mut()) {
+            *dst = [*src];
+        }
+        self.fb.update_buffer(&rgba);
+    }
 }
 
 enum DisplayMode {
@@ -104,15 +132,19 @@ enum DisplayMode {
     Mode128x64,
 }
 
-#[derive(Default)]
 struct Emulator {
     cpu: Cpu,
     memory: Memory,
+    display: Display,
 }
 
 impl Emulator {
     fn open<P: AsRef<Path>>(path: P) -> Self {
-        let mut emulator = Emulator::default();
+        let mut emulator = Emulator {
+            cpu: Cpu::default(),
+            memory: Memory::default(),
+            display: Display::new(),
+        };
         emulator.memory.load_default_sprites();
         emulator.memory.load_rom(path);
         emulator.cpu.pc = 0x200;
@@ -122,13 +154,22 @@ impl Emulator {
 
     fn run(&mut self) {
         loop {
-            self.step();
+            let quit = self.step();
+            use std::{thread::sleep, time::Duration};
+            sleep(Duration::from_millis(10));
+            if quit {
+                println!("ic: {}", self.cpu.ic);
+                break;
+            }
         }
+        loop{}
     }
 
-    fn step(&mut self) {
-        fn xx_to_u16(a: u8, b: u8) -> u16 {
-            ((a as u16) << 4) + b as u16
+    fn step(&mut self) -> bool {
+        self.cpu.ic += 1;
+
+        fn xx_to_u8(a: u8, b: u8) -> u8 {
+            (a << 4) + b
         }
         fn xxx_to_u16(a: u8, b: u8, c: u8) -> u16 {
             ((a as u16) << 8) + ((b as u16) << 4) + c as u16
@@ -147,22 +188,84 @@ impl Emulator {
                 self.cpu.pc = self.cpu.stack[self.cpu.sp as usize];
                 self.cpu.sp -= 1;
             },
-            (1, b, c, d) => println!("JP    {:#04x?}", xxx_to_u16(b, c, d)),
-            (2, b, c, d) => println!("CALL  {:#04x?}", xxx_to_u16(b, c, d)),
-            (3, b, c, d) => println!("SE    V{:x?} {:x?}", b, xx_to_u16(c, d)),
-            (6, b, c, d) => println!("LD    V{:x?} {:x?}", b, xx_to_u16(c, d)),
-            (7, b, c, d) => println!("ADD   V{:x?} {:x?}", b, xx_to_u16(c, d)),
-            (8, b, c, 0) => println!("LD    V{:x?} V{:x?}", b, c),
-            (0xa, b, c, d) => println!("LD    I {:x?}", xxx_to_u16(b, c, d)),
-            (0xc, b, c, d) => println!("RND   V{:x?} {:x?}", b, xx_to_u16(c, d)),
-            (0xd, b, c, d) => println!("DRW   V{:x?} V{:x?}, {}", b, c, d),
+            (1, b, c, d) => {
+                let addr = xxx_to_u16(b, c, d);
+                println!("JP    {:#04x?}", addr);
+
+                if self.cpu.pc == addr {
+                    return true;
+                }
+                self.cpu.pc = addr - 2;
+            },
+            (2, b, c, d) => {
+                self.cpu.sp += 1;
+                self.cpu.stack[self.cpu.sp as usize] = self.cpu.pc;
+
+                let addr = xxx_to_u16(b, c, d);
+                self.cpu.pc = addr;
+                println!("CALL  {:#04x?}", addr);
+            },
+            (3, x, c, d) => {
+                let byte = xx_to_u8(c, d);
+                println!("SE    V{:x?} {:x?}", x, byte);
+
+                if self.cpu.registers[x as usize] == byte {
+                    self.cpu.pc += 2;
+                }
+            },
+            (6, x, c, d) => {
+                let byte = xx_to_u8(c, d);
+
+                println!("LD    V{:x?} {:x?}", x, byte);
+                self.cpu.registers[x as usize] = byte;
+            },
+            (7, x, c, d) => {
+                let byte = xx_to_u8(c, d);
+                self.cpu.registers[x as usize] += byte;
+
+                println!("ADD   V{:x?} {:x?}", x, byte);
+            },
+            (8, x, y, 0) => {
+                self.cpu.registers[x as usize] = self.cpu.registers[y as usize];
+                println!("LD    V{:x?} V{:x?}", x, y);
+            },
+            (0xa, b, c, d) => {
+                let addr = xxx_to_u16(b, c, d);
+                self.cpu.I = addr;
+                println!("LD    I {:x?}", addr);
+            },
+            (0xc, b, c, d) => {
+                let byte = rand::random::<u8>();
+                let val = xx_to_u8(c, d);
+                let x = b;
+                println!("RND   V{:x?} {:x?}", x, byte);
+                self.cpu.registers[x as usize] = byte & val;
+            },
+            (0xd, Vx, Vy, n) => {
+                //TODO
+                let data = &self.memory.mem[self.cpu.I as usize .. self.cpu.I as usize + n as usize];
+                let x = self.cpu.registers[Vx as usize];
+                let y = self.cpu.registers[Vy as usize];
+
+                println!("{:?}", data.len());
+                println!("{:?}", data);
+
+                let mut i = 0;
+                for (byte, buff) in data.iter().zip(self.display.buffer.iter_mut().skip(x as usize * 32 + y as usize)) {
+                    i+=1;
+                    println!("i: {}, byte: {:?}", i, *byte);
+                    *buff ^= byte;
+                }
+                println!("{:?}", self.display.buffer);
+                println!("DRW   V{:x?} V{:x?}, {}", Vx, Vy, n);
+                self.display.update();
+            },
             _ => panic!("unknown instruction {:x?} {:x?} {:x?} {:x?}", a, b, c, d),
         }
 
         self.cpu.pc += 2;
 
-        // decode
-        // execute
+        return false;
     }
 }
 
