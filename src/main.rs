@@ -125,6 +125,16 @@ impl Display {
         }
         self.fb.update_buffer(&rgba);
     }
+
+    fn xor(&mut self, x: usize, y: usize, v: u8) -> bool {
+        if v == 1 {
+            self.buffer[x * 32 + y] ^= 127;
+            true
+        }
+        else {
+            false
+        }
+    }
 }
 
 enum DisplayMode {
@@ -244,19 +254,23 @@ impl Emulator {
             (0xd, Vx, Vy, n) => {
                 //TODO
                 let data = &self.memory.mem[self.cpu.I as usize .. self.cpu.I as usize + n as usize];
-                let x = self.cpu.registers[Vx as usize];
-                let y = self.cpu.registers[Vy as usize];
+                let x = self.cpu.registers[Vx as usize] as usize;
+                let y = self.cpu.registers[Vy as usize] as usize;
 
+                println!("I={:?}", self.cpu.I as usize);
                 println!("{:?}", data.len());
                 println!("{:?}", data);
 
-                let mut i = 0;
-                for (byte, buff) in data.iter().zip(self.display.buffer.iter_mut().skip(x as usize * 32 + y as usize)) {
-                    i+=1;
-                    println!("i: {}, byte: {:?}", i, *byte);
-                    *buff ^= byte;
+                for (j, byte) in data.iter().enumerate() {
+                    //println!("byte: {}", byte);
+                    for i in 0..7 {
+                        let b = ((byte >> i) & 1) as u8;
+                        print!("{} ", b);
+
+                        self.display.xor(x+i, y+j, b);
+                    }
+                    println!("");
                 }
-                println!("{:?}", self.display.buffer);
                 println!("DRW   V{:x?} V{:x?}, {}", Vx, Vy, n);
                 self.display.update();
             },
